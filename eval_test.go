@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	_ "code.google.com/p/go.tools/go/gcimporter"
+	_ "github.com/rocky/go-gcimporter"
 	. "github.com/rocky/go-types"
 )
 
