@@ -10,11 +10,13 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+/***
 	"strings"
 	"testing"
+***/
 
 	_ "code.google.com/p/go.tools/go/gcimporter"
-	. "code.google.com/p/go.tools/go/types"
+	. "github.com/rocky/go-types"
 )
 
 func pkgFor(path, source string, info *Info) (*Package, error) {
@@ -28,6 +30,7 @@ func pkgFor(path, source string, info *Info) (*Package, error) {
 	return conf.Check(f.Name.Name, fset, []*ast.File{f}, info)
 }
 
+/********************
 func mustTypecheck(t *testing.T, path, source string, info *Info) string {
 	pkg, err := pkgFor(path, source, info)
 	if err != nil {
@@ -286,3 +289,4 @@ func TestInitOrder(t *testing.T) {
 		}
 	}
 }
+***********************/

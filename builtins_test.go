@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	_ "code.google.com/p/go.tools/go/gcimporter"
-	. "code.google.com/p/go.tools/go/types"
+	. "github.com/rocky/go-types"
 )
 
 var builtinCalls = []struct {
@@ -102,6 +102,7 @@ var builtinCalls = []struct {
 	// no tests for trace since it produces output as a side-effect
 }
 
+/***************rocky
 func TestBuiltinSignatures(t *testing.T) {
 	DefPredeclaredTestFuncs()
 
@@ -123,6 +124,7 @@ func TestBuiltinSignatures(t *testing.T) {
 		}
 	}
 }
+***********************/
 
 func testBuiltinSignature(t *testing.T, name, src0, want string) {
 	src := fmt.Sprintf(`package p; import "unsafe"; type _ unsafe.Pointer /* use unsafe */; func _() { %s }`, src0)

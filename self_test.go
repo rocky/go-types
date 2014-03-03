@@ -15,7 +15,7 @@ import (
 	"time"
 
 	_ "code.google.com/p/go.tools/go/gcimporter"
-	. "code.google.com/p/go.tools/go/types"
+	. "github.com/rocky/go-types"
 )
 
 var benchmark = flag.Bool("b", false, "run benchmarks")
@@ -27,7 +27,7 @@ func TestSelf(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Check("go/types", fset, files)
+	_, err = Check("go-types", fset, files)
 	if err != nil {
 		// Importing go.tools/go/exact doensn't work in the
 		// build dashboard environment. Don't report an error

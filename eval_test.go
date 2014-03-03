@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	_ "code.google.com/p/go.tools/go/gcimporter"
-	. "code.google.com/p/go.tools/go/types"
+	. "github.com/rocky/go-types"
 )
 
 func testEval(t *testing.T, pkg *Package, scope *Scope, str string, typ Type, typStr, valStr string) {
