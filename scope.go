@@ -24,13 +24,14 @@ import (
 type Scope struct {
 	parent   *Scope
 	children []*Scope
+	comment  string            // for debugging only
 	elems    map[string]Object // lazily allocated
 }
 
 // NewScope returns a new, empty scope contained in the given parent
-// scope, if any.
-func NewScope(parent *Scope) *Scope {
-	s := &Scope{parent: parent}
+// scope, if any.  The comment is for debugging only.
+func NewScope(parent *Scope, comment string) *Scope {
+	s := &Scope{parent: parent, comment: comment}
 	// don't add children to Universe scope!
 	if parent != nil && parent != Universe {
 		parent.children = append(parent.children, s)
@@ -70,34 +71,28 @@ func (s *Scope) Lookup(name string) Object {
 
 // LookupParent follows the parent chain of scopes starting with s until
 // it finds a scope where Lookup(name) returns a non-nil object, and then
-// returns that object. If no such scope exists, the result is nil.
-func (s *Scope) LookupParent(name string) Object {
+// returns that scope and object. If no such scope exists, the result is (nil, nil).
+//
+// Note that obj.Parent() may be different from the returned scope if the
+// object was inserted into the scope and already had a parent at that
+// time (see Insert, below). This can only happen for dot-imported objects
+// whose scope is the scope of the package that exported them.
+func (s *Scope) LookupParent(name string) (*Scope, Object) {
 	for ; s != nil; s = s.parent {
 		if obj := s.elems[name]; obj != nil {
-			return obj
+			return s, obj
 		}
 	}
-	return nil
+	return nil, nil
 }
-
-// TODO(gri): Should Insert not be exported?
 
 // Insert attempts to insert an object obj into scope s.
 // If s already contains an alternative object alt with
 // the same name, Insert leaves s unchanged and returns alt.
-// Otherwise it inserts obj, sets the object's scope to
-// s, and returns nil. Objects with blank "_" names are
-// not inserted, but have their parent field set to s.
+// Otherwise it inserts obj, sets the object's parent scope
+// if not already set, and returns nil.
 func (s *Scope) Insert(obj Object) Object {
 	name := obj.Name()
-	// spec: "The blank identifier, represented by the underscore
-	// character _, may be used in a declaration like any other
-	// identifier but the declaration does not introduce a new
-	// binding."
-	if name == "_" {
-		obj.setParent(s)
-		return nil
-	}
 	if alt := s.elems[name]; alt != nil {
 		return alt
 	}
@@ -105,7 +100,9 @@ func (s *Scope) Insert(obj Object) Object {
 		s.elems = make(map[string]Object)
 	}
 	s.elems[name] = obj
-	obj.setParent(s)
+	if obj.Parent() == nil {
+		obj.setParent(s)
+	}
 	return nil
 }
 
@@ -118,12 +115,13 @@ func (s *Scope) WriteTo(w io.Writer, n int, recurse bool) {
 	const ind = ".  "
 	indn := strings.Repeat(ind, n)
 
+	fmt.Fprintf(w, "%s%s scope %p {", indn, s.comment, s)
 	if len(s.elems) == 0 {
-		fmt.Fprintf(w, "%sscope %p {}\n", indn, s)
+		fmt.Fprintf(w, "}\n")
 		return
 	}
 
-	fmt.Fprintf(w, "%sscope %p {\n", indn, s)
+	fmt.Fprintln(w)
 	indn1 := indn + ind
 	for _, name := range s.Names() {
 		fmt.Fprintf(w, "%s%s\n", indn1, s.elems[name])

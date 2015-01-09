@@ -95,14 +95,18 @@ func assignments1() {
 }
 
 func assignments2() {
+	type mybool bool
 	var m map[string][]bool
 	var s []bool
 	var b bool
+	var d mybool
 	_ = s
 	_ = b
+	_ = d
 
 	// assignments to map index expressions are ok
 	s, b = m["foo"]
+	_, d = m["bar"]
 	m["foo"] = nil
 	m["foo"] = nil /* ERROR assignment count mismatch */ , false
 	_ = append(m["foo"])
@@ -110,6 +114,7 @@ func assignments2() {
 
 	var c chan int
 	_, b = <-c
+	_, d = <-c
 	<- /* ERROR cannot assign */ c = 0
 	<-c = 0 /* ERROR assignment count mismatch */ , false
 
@@ -213,7 +218,7 @@ func selects() {
 }
 
 func gos() {
-	go 1 /* ERROR "expected function/method call" */
+	go 1 /* ERROR HERE "function must be invoked" */
 	go int /* ERROR "go requires function call, not conversion" */ (0)
 	go gos()
 	var c chan int
@@ -222,7 +227,7 @@ func gos() {
 }
 
 func defers() {
-	defer 1 /* ERROR "expected function/method call" */
+	defer 1 /* ERROR HERE "function must be invoked" */
 	defer int /* ERROR "defer requires function call, not conversion" */ (0)
 	defer defers()
 	var c chan int
@@ -357,6 +362,37 @@ func continues() {
 	}
 }
 
+func returns0() {
+	return
+	return 0 /* ERROR no result values expected */
+}
+
+func returns1(x float64) (int, *float64) {
+	return 0, &x
+	return /* ERROR wrong number of return values */
+	return "foo" /* ERROR "cannot convert" */, x /* ERROR "cannot return" */
+	return /* ERROR wrong number of return values */ 0, &x, 1
+}
+
+func returns2() (a, b int) {
+	return
+	return 1, "foo" /* ERROR cannot convert */
+	return /* ERROR wrong number of return values */ 1, 2, 3
+	{
+		type a int
+		return 1, 2
+		return /* ERROR a not in scope at return */
+	}
+}
+
+func returns3() (_ int) {
+	return
+	{
+		var _ int // blank (_) identifiers never shadow since they are in no scope
+		return
+	}
+}
+
 func switches0() {
 	var x int
 
@@ -370,6 +406,14 @@ func switches0() {
 
 	switch {
 	case 1  /* ERROR "cannot convert" */ :
+	}
+
+	true := "false"
+	_ = true
+	// A tagless switch is equivalent to the bool 
+        // constant true, not the identifier 'true'.
+	switch {
+	case "false" /* ERROR "cannot convert" */:
 	}
 
 	switch int32(x) {
@@ -514,7 +558,7 @@ func typeswitches() {
 	case T:
 	case T1 /* ERROR "missing method m" */ :
 	case T2 /* ERROR "wrong type for method m" */ :
-	case I2 /* ERROR "wrong type for method m" */ :
+	case I2 /* STRICT "wrong type for method m" */ : // only an error in strict mode (issue 8561)
 	}
 }
 
@@ -552,19 +596,19 @@ func typeswitch2() {
 	switch A(nil).(type) {
 	case A:
 	case B:
-	case C /* ERROR "cannot have dynamic type" */:
+	case C /* STRICT "cannot have dynamic type" */: // only an error in strict mode (issue 8561)
 	}
 }
 
 func typeswitch3(x interface{}) {
 	switch x.(type) {
-	case int /* ERROR previous case int */ :
+	case int:
 	case float64:
 	case int /* ERROR duplicate case */ :
 	}
 
 	switch x.(type) {
-	case nil /* ERROR previous case <nil> */ /* ERROR previous case <nil> */ :
+	case nil:
 	case int:
 	case nil /* ERROR duplicate case */ , nil /* ERROR duplicate case */ :
 	}
@@ -572,10 +616,18 @@ func typeswitch3(x interface{}) {
 	type F func(int)
 	switch x.(type) {
 	case nil:
-	case int, func /* ERROR previous case */ (int):
+	case int, func(int):
 	case float32, func /* ERROR duplicate case */ (x int):
 	case F:
 	}
+}
+
+func fors1() {
+	for {}
+	var i string
+	_ = i
+	for i := 0; i < 10; i++ {}
+	for i := 0; i < 10; j /* ERROR cannot declare */ := 0 {}
 }
 
 func rangeloops1() {
@@ -592,9 +644,11 @@ func rangeloops1() {
 		rc <-chan int
 	)
 
+	for range x /* ERROR "cannot range over" */ {}
 	for _ = range x /* ERROR "cannot range over" */ {}
 	for i := range x /* ERROR "cannot range over" */ {}
 
+	for range a {}
 	for i := range a {
 		var ii int
 		ii = i
@@ -613,6 +667,7 @@ func rangeloops1() {
 	for ii, xx = range a {}
 	_, _ = ii, xx
 
+	for range b {}
 	for i := range b {
 		var ii int
 		ii = i
@@ -627,6 +682,7 @@ func rangeloops1() {
 		_ = xx
 	}
 
+	for range s {}
 	for i := range s {
 		var ii int
 		ii = i
@@ -641,14 +697,17 @@ func rangeloops1() {
 		_ = xx
 	}
 
+	for range p {}
 	for _, x := range p {
 		var xx complex128
 		xx = x
 		_ = xx
 	}
 
+	for range pp /* ERROR "cannot range over" */ {}
 	for _, x := range pp /* ERROR "cannot range over" */ {}
 
+	for range m {}
 	for k := range m {
 		var kk int32
 		kk = k /* ERROR "cannot assign" */
@@ -661,6 +720,7 @@ func rangeloops1() {
 		if v {}
 	}
 
+	for range c {}
 	for _, _ /* ERROR "only one iteration variable" */ = range c {}
 	for e := range c {
 		var ee int
@@ -672,6 +732,8 @@ func rangeloops1() {
 
 	// constant strings
 	const cs = "foo"
+	for range cs {}
+	for range "" {}
 	for i, x := range cs { _, _ = i, x }
 	for i, x := range "" {
 		var ii int

@@ -11,12 +11,12 @@ import (
 	"go/token"
 )
 
-func (check *checker) call(x *operand, e *ast.CallExpr) exprKind {
+func (check *Checker) call(x *operand, e *ast.CallExpr) exprKind {
 	check.exprOrType(x, e.Fun)
 
 	switch x.mode {
 	case invalid:
-		check.use(e.Args)
+		check.use(e.Args...)
 		x.mode = invalid
 		x.expr = e
 		return statement
@@ -32,9 +32,6 @@ func (check *checker) call(x *operand, e *ast.CallExpr) exprKind {
 			check.expr(x, e.Args[0])
 			if x.mode != invalid {
 				check.conversion(x, T)
-				if x.mode != invalid {
-					check.conversions[e] = true // for cap/len checking
-				}
 			}
 		default:
 			check.errorf(e.Args[n-1].Pos(), "too many arguments in conversion to %s", T)
@@ -48,6 +45,10 @@ func (check *checker) call(x *operand, e *ast.CallExpr) exprKind {
 			x.mode = invalid
 		}
 		x.expr = e
+		// a non-constant result implies a function call
+		if x.mode != invalid && x.mode != constant {
+			check.hasCallOrRecv = true
+		}
 		return predeclaredFuncs[id].kind
 
 	default:
@@ -61,6 +62,12 @@ func (check *checker) call(x *operand, e *ast.CallExpr) exprKind {
 		}
 
 		arg, n, _ := unpack(func(x *operand, i int) { check.expr(x, e.Args[i]) }, len(e.Args), false)
+		if arg == nil {
+			x.mode = invalid
+			x.expr = e
+			return statement
+		}
+
 		check.arguments(x, e, sig, arg, n)
 
 		// determine result
@@ -75,18 +82,30 @@ func (check *checker) call(x *operand, e *ast.CallExpr) exprKind {
 			x.typ = sig.results
 		}
 		x.expr = e
+		check.hasCallOrRecv = true
 
 		return statement
 	}
 }
 
-// use type-checks each list element.
-// Useful to make sure a list of expressions is evaluated
+// use type-checks each argument.
+// Useful to make sure expressions are evaluated
 // (and variables are "used") in the presence of other errors.
-func (check *checker) use(list []ast.Expr) {
+func (check *Checker) use(arg ...ast.Expr) {
 	var x operand
-	for _, e := range list {
+	for _, e := range arg {
 		check.rawExpr(&x, e, nil)
+	}
+}
+
+// useGetter is like use, but takes a getter instead of a list of expressions.
+// It should be called instead of use if a getter is present to avoid repeated
+// evaluation of the first argument (since the getter was likely obtained via
+// unpack, which may have evaluated the first argument already).
+func (check *Checker) useGetter(get getter, n int) {
+	var x operand
+	for i := 0; i < n; i++ {
+		get(&x, i)
 	}
 }
 
@@ -96,21 +115,22 @@ func (check *checker) use(list []ast.Expr) {
 // specific.
 type getter func(x *operand, i int)
 
-// unpack takes a getter get and a number of operands n. If n == 1 and the
-// first operand is a function call, or a comma,ok expression and allowCommaOk
-// is set, the result is a new getter and operand count providing access to the
-// function results, or comma,ok values, respectively. The third result value
-// reports if it is indeed the comma,ok case. In all other cases, the incoming
-// getter and operand count are returned unchanged, and the third result value
-// is false.
+// unpack takes a getter get and a number of operands n. If n == 1, unpack
+// calls the incoming getter for the first operand. If that operand is
+// invalid, unpack returns (nil, 0, false). Otherwise, if that operand is a
+// function call, or a comma-ok expression and allowCommaOk is set, the result
+// is a new getter and operand count providing access to the function results,
+// or comma-ok values, respectively. The third result value reports if it
+// is indeed the comma-ok case. In all other cases, the incoming getter and
+// operand count are returned unchanged, and the third result value is false.
 //
-// In other words, if there's exactly one operand that - after type-checking by
-// calling get - stands for multiple operands, the resulting getter provides access
-// to those operands instead.
+// In other words, if there's exactly one operand that - after type-checking
+// by calling get - stands for multiple operands, the resulting getter provides
+// access to those operands instead.
 //
-// Note that unpack may call get(..., 0); but if the result getter is called
-// at most once for a given operand index i (including i == 0), that operand
-// is guaranteed to cause only one call of the incoming getter with that i.
+// If the returned getter is called at most once for a given operand index i
+// (including i == 0), that operand is guaranteed to cause only one call of
+// the incoming getter with that i.
 //
 func unpack(get getter, n int, allowCommaOk bool) (getter, int, bool) {
 	if n == 1 {
@@ -118,12 +138,7 @@ func unpack(get getter, n int, allowCommaOk bool) (getter, int, bool) {
 		var x0 operand
 		get(&x0, 0)
 		if x0.mode == invalid {
-			return func(x *operand, i int) {
-				if i != 0 {
-					unreachable()
-				}
-				x.mode = invalid
-			}, 1, false
+			return nil, 0, false
 		}
 
 		if t, ok := x0.typ.(*Tuple); ok {
@@ -163,11 +178,11 @@ func unpack(get getter, n int, allowCommaOk bool) (getter, int, bool) {
 
 // arguments checks argument passing for the call with the given signature.
 // The arg function provides the operand for the i'th argument.
-func (check *checker) arguments(x *operand, call *ast.CallExpr, sig *Signature, arg getter, n int) {
+func (check *Checker) arguments(x *operand, call *ast.CallExpr, sig *Signature, arg getter, n int) {
 	passSlice := false
 	if call.Ellipsis.IsValid() {
 		// last argument is of the form x...
-		if sig.isVariadic {
+		if sig.variadic {
 			passSlice = true
 		} else {
 			check.errorf(call.Ellipsis, "cannot use ... in call to non-variadic %s", call.Fun)
@@ -184,7 +199,7 @@ func (check *checker) arguments(x *operand, call *ast.CallExpr, sig *Signature, 
 	}
 
 	// check argument count
-	if sig.isVariadic {
+	if sig.variadic {
 		// a variadic function accepts an "empty"
 		// last argument: count one extra
 		n++
@@ -197,7 +212,7 @@ func (check *checker) arguments(x *operand, call *ast.CallExpr, sig *Signature, 
 
 // argument checks passing of argument x to the i'th parameter of the given signature.
 // If passSlice is set, the argument is followed by ... in the call.
-func (check *checker) argument(sig *Signature, i int, x *operand, passSlice bool) {
+func (check *Checker) argument(sig *Signature, i int, x *operand, passSlice bool) {
 	n := sig.params.Len()
 
 	// determine parameter type
@@ -205,7 +220,7 @@ func (check *checker) argument(sig *Signature, i int, x *operand, passSlice bool
 	switch {
 	case i < n:
 		typ = sig.params.vars[i].typ
-	case sig.isVariadic:
+	case sig.variadic:
 		typ = sig.params.vars[n-1].typ
 		if debug {
 			if _, ok := typ.(*Slice); !ok {
@@ -227,7 +242,7 @@ func (check *checker) argument(sig *Signature, i int, x *operand, passSlice bool
 			check.errorf(x.pos(), "cannot use %s as parameter of type %s", x, typ)
 			return
 		}
-	} else if sig.isVariadic && i >= n-1 {
+	} else if sig.variadic && i >= n-1 {
 		// use the variadic parameter slice's element type
 		typ = typ.(*Slice).elem
 	}
@@ -237,7 +252,7 @@ func (check *checker) argument(sig *Signature, i int, x *operand, passSlice bool
 	}
 }
 
-func (check *checker) selector(x *operand, e *ast.SelectorExpr) {
+func (check *Checker) selector(x *operand, e *ast.SelectorExpr) {
 	// these must be declared before the "goto Error" statements
 	var (
 		obj      Object
@@ -251,23 +266,24 @@ func (check *checker) selector(x *operand, e *ast.SelectorExpr) {
 	// can only appear in qualified identifiers which are mapped to
 	// selector expressions.
 	if ident, ok := e.X.(*ast.Ident); ok {
-		if pkg, _ := check.topScope.LookupParent(ident.Name).(*PkgName); pkg != nil {
-			check.recordObject(ident, pkg)
+		_, obj := check.scope.LookupParent(ident.Name)
+		if pkg, _ := obj.(*PkgName); pkg != nil {
+			assert(pkg.pkg == check.pkg)
+			check.recordUse(ident, pkg)
 			pkg.used = true
-			exp := pkg.pkg.scope.Lookup(sel)
+			exp := pkg.imported.scope.Lookup(sel)
 			if exp == nil {
-				if !pkg.pkg.fake {
+				if !pkg.imported.fake {
 					check.errorf(e.Pos(), "%s not declared by package %s", sel, ident)
 				}
 				goto Error
 			}
-			if !exp.IsExported() {
+			if !exp.Exported() {
 				check.errorf(e.Pos(), "%s not exported by package %s", sel, ident)
 				// ok to continue
 			}
-			check.recordSelection(e, PackageObj, nil, exp, nil, false)
+			check.recordUse(e.Sel, exp)
 			// Simplified version of the code for *ast.Idents:
-			// - imported packages use types.Scope and types.Objects
 			// - imported objects are always fully initialized
 			switch exp := exp.(type) {
 			case *Const:
@@ -301,12 +317,15 @@ func (check *checker) selector(x *operand, e *ast.SelectorExpr) {
 		goto Error
 	}
 
-	obj, index, indirect = LookupFieldOrMethod(x.typ, check.pkg, sel)
+	obj, index, indirect = LookupFieldOrMethod(x.typ, x.mode == variable, check.pkg, sel)
 	if obj == nil {
-		if index != nil {
+		switch {
+		case index != nil:
 			// TODO(gri) should provide actual type where the conflict happens
 			check.invalidOp(e.Pos(), "ambiguous selector %s", sel)
-		} else {
+		case indirect:
+			check.invalidOp(e.Pos(), "%s is not in method set of %s", sel, x.typ)
+		default:
 			check.invalidOp(e.Pos(), "%s has no field or method %s", x, sel)
 		}
 		goto Error
@@ -317,12 +336,6 @@ func (check *checker) selector(x *operand, e *ast.SelectorExpr) {
 		m, _ := obj.(*Func)
 		if m == nil {
 			check.invalidOp(e.Pos(), "%s has no method %s", x, sel)
-			goto Error
-		}
-
-		// verify that m is in the method set of x.typ
-		if !indirect && ptrRecv(m) {
-			check.invalidOp(e.Pos(), "%s is not in method set of %s", sel, x.typ)
 			goto Error
 		}
 
@@ -337,9 +350,9 @@ func (check *checker) selector(x *operand, e *ast.SelectorExpr) {
 		}
 		x.mode = value
 		x.typ = &Signature{
-			params:     NewTuple(append([]*Var{NewVar(token.NoPos, check.pkg, "", x.typ)}, params...)...),
-			results:    sig.results,
-			isVariadic: sig.isVariadic,
+			params:   NewTuple(append([]*Var{NewVar(token.NoPos, check.pkg, "", x.typ)}, params...)...),
+			results:  sig.results,
+			variadic: sig.variadic,
 		}
 
 		check.addDeclDep(m)
@@ -357,18 +370,8 @@ func (check *checker) selector(x *operand, e *ast.SelectorExpr) {
 			x.typ = obj.typ
 
 		case *Func:
-			// TODO(gri) This code appears elsewhere, too. Factor!
-			// verify that obj is in the method set of x.typ (or &(x.typ) if x is addressable)
-			//
-			// spec: "A method call x.m() is valid if the method set of (the type of) x
-			//        contains m and the argument list can be assigned to the parameter
-			//        list of m. If x is addressable and &x's method set contains m, x.m()
-			//        is shorthand for (&x).m()".
-			if !indirect && x.mode != variable && ptrRecv(obj) {
-				check.invalidOp(e.Pos(), "%s is not in method set of %s", sel, x)
-				goto Error
-			}
-
+			// TODO(gri) If we needed to take into account the receiver's
+			// addressability, should we report the type &(x.typ) instead?
 			check.recordSelection(e, MethodVal, x.typ, obj, index, indirect)
 
 			if debug {
@@ -392,7 +395,7 @@ func (check *checker) selector(x *operand, e *ast.SelectorExpr) {
 				// TODO(gri) Consider also using a method set cache for the lifetime
 				// of checker once we rely on MethodSet lookup instead of individual
 				// lookup.
-				mset := typ.MethodSet()
+				mset := NewMethodSet(typ)
 				if m := mset.Lookup(check.pkg, sel); m == nil || m.obj != obj {
 					check.dump("%s: (%s).%v -> %s", e.Pos(), typ, obj.name, m)
 					check.dump("%s\n", mset)
@@ -406,6 +409,8 @@ func (check *checker) selector(x *operand, e *ast.SelectorExpr) {
 			sig := *obj.typ.(*Signature)
 			sig.recv = nil
 			x.typ = &sig
+
+			check.addDeclDep(obj)
 
 		default:
 			unreachable()

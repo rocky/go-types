@@ -14,7 +14,7 @@ import (
 // isTerminating reports if s is a terminating statement.
 // If s is labeled, label is the label name; otherwise s
 // is "".
-func (check *checker) isTerminating(s ast.Stmt, label string) bool {
+func (check *Checker) isTerminating(s ast.Stmt, label string) bool {
 	switch s := s.(type) {
 	default:
 		unreachable()
@@ -31,7 +31,7 @@ func (check *checker) isTerminating(s ast.Stmt, label string) bool {
 		// the predeclared (possibly parenthesized) panic() function is terminating
 		if call, _ := unparen(s.X).(*ast.CallExpr); call != nil {
 			if id, _ := call.Fun.(*ast.Ident); id != nil {
-				if obj := check.topScope.LookupParent(id.Name); obj != nil {
+				if _, obj := check.scope.LookupParent(id.Name); obj != nil {
 					if b, _ := obj.(*Builtin); b != nil && b.id == _Panic {
 						return true
 					}
@@ -82,12 +82,12 @@ func (check *checker) isTerminating(s ast.Stmt, label string) bool {
 	return false
 }
 
-func (check *checker) isTerminatingList(list []ast.Stmt, label string) bool {
+func (check *Checker) isTerminatingList(list []ast.Stmt, label string) bool {
 	n := len(list)
 	return n > 0 && check.isTerminating(list[n-1], label)
 }
 
-func (check *checker) isTerminatingSwitch(body *ast.BlockStmt, label string) bool {
+func (check *Checker) isTerminatingSwitch(body *ast.BlockStmt, label string) bool {
 	hasDefault := false
 	for _, s := range body.List {
 		cc := s.(*ast.CaseClause)

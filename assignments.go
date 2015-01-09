@@ -9,8 +9,6 @@ package types
 import (
 	"go/ast"
 	"go/token"
-
-	"code.google.com/p/go.tools/go/exact"
 )
 
 // assignment reports whether x can be assigned to a variable of type T,
@@ -21,7 +19,7 @@ import (
 //
 // TODO(gri) Should find a better way to handle in-band errors.
 //
-func (check *checker) assignment(x *operand, T Type) bool {
+func (check *Checker) assignment(x *operand, T Type) bool {
 	switch x.mode {
 	case invalid:
 		return true // error reported before
@@ -64,10 +62,10 @@ func (check *checker) assignment(x *operand, T Type) bool {
 	// spec: "If a left-hand side is the blank identifier, any typed or
 	// non-constant value except for the predeclared identifier nil may
 	// be assigned to it."
-	return T == nil || x.isAssignableTo(check.conf, T)
+	return T == nil || x.assignableTo(check.conf, T)
 }
 
-func (check *checker) initConst(lhs *Const, x *operand) {
+func (check *Checker) initConst(lhs *Const, x *operand) {
 	if x.mode == invalid || x.typ == Typ[Invalid] || lhs.typ == Typ[Invalid] {
 		if lhs.typ == nil {
 			lhs.typ = Typ[Invalid]
@@ -94,14 +92,14 @@ func (check *checker) initConst(lhs *Const, x *operand) {
 		if x.mode != invalid {
 			check.errorf(x.pos(), "cannot define constant %s (type %s) as %s", lhs.Name(), lhs.typ, x)
 		}
-		lhs.val = exact.MakeUnknown()
 		return
 	}
 
 	lhs.val = x.val
 }
 
-func (check *checker) initVar(lhs *Var, x *operand) Type {
+// If result is set, lhs is a function result parameter and x is a return result.
+func (check *Checker) initVar(lhs *Var, x *operand, result bool) Type {
 	if x.mode == invalid || x.typ == Typ[Invalid] || lhs.typ == Typ[Invalid] {
 		if lhs.typ == nil {
 			lhs.typ = Typ[Invalid]
@@ -126,15 +124,20 @@ func (check *checker) initVar(lhs *Var, x *operand) Type {
 
 	if !check.assignment(x, lhs.typ) {
 		if x.mode != invalid {
-			check.errorf(x.pos(), "cannot initialize variable %s (type %s) with %s", lhs.Name(), lhs.typ, x)
+			if result {
+				// don't refer to lhs.name because it may be an anonymous result parameter
+				check.errorf(x.pos(), "cannot return %s as value of type %s", x, lhs.typ)
+			} else {
+				check.errorf(x.pos(), "cannot initialize %s with %s", lhs, x)
+			}
 		}
 		return nil
 	}
 
-	return lhs.typ
+	return x.typ
 }
 
-func (check *checker) assignVar(lhs ast.Expr, x *operand) Type {
+func (check *Checker) assignVar(lhs ast.Expr, x *operand) Type {
 	if x.mode == invalid || x.typ == Typ[Invalid] {
 		return nil
 	}
@@ -144,7 +147,7 @@ func (check *checker) assignVar(lhs ast.Expr, x *operand) Type {
 
 	// Don't evaluate lhs if it is the blank identifier.
 	if ident != nil && ident.Name == "_" {
-		check.recordObject(ident, nil)
+		check.recordDef(ident, nil)
 		if !check.assignment(x, nil) {
 			assert(x.mode == invalid)
 			x.typ = nil
@@ -158,7 +161,7 @@ func (check *checker) assignVar(lhs ast.Expr, x *operand) Type {
 	var v *Var
 	var v_used bool
 	if ident != nil {
-		if obj := check.topScope.LookupParent(ident.Name); obj != nil {
+		if _, obj := check.scope.LookupParent(ident.Name); obj != nil {
 			v, _ = obj.(*Var)
 			if v != nil {
 				v_used = v.used
@@ -195,21 +198,25 @@ func (check *checker) assignVar(lhs ast.Expr, x *operand) Type {
 		return nil
 	}
 
-	return z.typ
+	return x.typ
 }
 
 // If returnPos is valid, initVars is called to type-check the assignment of
 // return expressions, and returnPos is the position of the return statement.
-func (check *checker) initVars(lhs []*Var, rhs []ast.Expr, returnPos token.Pos) {
+func (check *Checker) initVars(lhs []*Var, rhs []ast.Expr, returnPos token.Pos) {
 	l := len(lhs)
 	get, r, commaOk := unpack(func(x *operand, i int) { check.expr(x, rhs[i]) }, len(rhs), l == 2 && !returnPos.IsValid())
-	if l != r {
-		// invalidate lhs
+	if get == nil || l != r {
+		// invalidate lhs and use rhs
 		for _, obj := range lhs {
 			if obj.typ == nil {
 				obj.typ = Typ[Invalid]
 			}
 		}
+		if get == nil {
+			return // error reported by unpack
+		}
+		check.useGetter(get, r)
 		if returnPos.IsValid() {
 			check.errorf(returnPos, "wrong number of return values (want %d, got %d)", l, r)
 			return
@@ -223,7 +230,7 @@ func (check *checker) initVars(lhs []*Var, rhs []ast.Expr, returnPos token.Pos) 
 		var a [2]Type
 		for i := range a {
 			get(&x, i)
-			a[i] = check.initVar(lhs[i], &x)
+			a[i] = check.initVar(lhs[i], &x, returnPos.IsValid())
 		}
 		check.recordCommaOkTypes(rhs[0], a)
 		return
@@ -231,14 +238,18 @@ func (check *checker) initVars(lhs []*Var, rhs []ast.Expr, returnPos token.Pos) 
 
 	for i, lhs := range lhs {
 		get(&x, i)
-		check.initVar(lhs, &x)
+		check.initVar(lhs, &x, returnPos.IsValid())
 	}
 }
 
-func (check *checker) assignVars(lhs, rhs []ast.Expr) {
+func (check *Checker) assignVars(lhs, rhs []ast.Expr) {
 	l := len(lhs)
 	get, r, commaOk := unpack(func(x *operand, i int) { check.expr(x, rhs[i]) }, len(rhs), l == 2)
+	if get == nil {
+		return // error reported by unpack
+	}
 	if l != r {
+		check.useGetter(get, r)
 		check.errorf(rhs[0].Pos(), "assignment count mismatch (%d vs %d)", l, r)
 		return
 	}
@@ -260,8 +271,8 @@ func (check *checker) assignVars(lhs, rhs []ast.Expr) {
 	}
 }
 
-func (check *checker) shortVarDecl(pos token.Pos, lhs, rhs []ast.Expr) {
-	scope := check.topScope
+func (check *Checker) shortVarDecl(pos token.Pos, lhs, rhs []ast.Expr) {
+	scope := check.scope
 
 	// collect lhs variables
 	var newVars []*Var
@@ -271,21 +282,24 @@ func (check *checker) shortVarDecl(pos token.Pos, lhs, rhs []ast.Expr) {
 		if ident, _ := lhs.(*ast.Ident); ident != nil {
 			// Use the correct obj if the ident is redeclared. The
 			// variable's scope starts after the declaration; so we
-			// must use Scope.Lookup here and call Scope.Insert later.
-			if alt := scope.Lookup(ident.Name); alt != nil {
+			// must use Scope.Lookup here and call Scope.Insert
+			// (via check.declare) later.
+			name := ident.Name
+			if alt := scope.Lookup(name); alt != nil {
 				// redeclared object must be a variable
 				if alt, _ := alt.(*Var); alt != nil {
 					obj = alt
 				} else {
 					check.errorf(lhs.Pos(), "cannot assign to %s", lhs)
 				}
+				check.recordUse(ident, alt)
 			} else {
-				// declare new variable
-				obj = NewVar(ident.Pos(), check.pkg, ident.Name, nil)
-				newVars = append(newVars, obj)
-			}
-			if obj != nil {
-				check.recordObject(ident, obj)
+				// declare new variable, possibly a blank (_) variable
+				obj = NewVar(ident.Pos(), check.pkg, name, nil)
+				if name != "_" {
+					newVars = append(newVars, obj)
+				}
+				check.recordDef(ident, obj)
 			}
 		} else {
 			check.errorf(lhs.Pos(), "cannot declare %s", lhs)
@@ -304,6 +318,6 @@ func (check *checker) shortVarDecl(pos token.Pos, lhs, rhs []ast.Expr) {
 			check.declare(scope, nil, obj) // recordObject already called
 		}
 	} else {
-		check.errorf(pos, "no new variables on left side of :=")
+		check.softErrorf(pos, "no new variables on left side of :=")
 	}
 }

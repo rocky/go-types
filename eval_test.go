@@ -13,17 +13,17 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/rocky/go-gcimporter"
+	_ "golang.org/x/tools/go/gcimporter"
 	. "github.com/rocky/go-types"
 )
 
 func testEval(t *testing.T, pkg *Package, scope *Scope, str string, typ Type, typStr, valStr string) {
-	gotTyp, gotVal, err := Eval(str, pkg, scope)
+	gotTv, err := Eval(str, pkg, scope)
 	if err != nil {
 		t.Errorf("Eval(%q) failed: %s", str, err)
 		return
 	}
-	if gotTyp == nil {
+	if gotTv.Type == nil {
 		t.Errorf("Eval(%q) got nil type but no error", str)
 		return
 	}
@@ -31,13 +31,13 @@ func testEval(t *testing.T, pkg *Package, scope *Scope, str string, typ Type, ty
 	// compare types
 	if typ != nil {
 		// we have a type, check identity
-		if !IsIdentical(gotTyp, typ) {
-			t.Errorf("Eval(%q) got type %s, want %s", str, gotTyp, typ)
+		if !Identical(gotTv.Type, typ) {
+			t.Errorf("Eval(%q) got type %s, want %s", str, gotTv.Type, typ)
 			return
 		}
 	} else {
 		// we have a string, compare type string
-		gotStr := gotTyp.String()
+		gotStr := gotTv.Type.String()
 		if gotStr != typStr {
 			t.Errorf("Eval(%q) got type %s, want %s", str, gotStr, typStr)
 			return
@@ -46,8 +46,8 @@ func testEval(t *testing.T, pkg *Package, scope *Scope, str string, typ Type, ty
 
 	// compare values
 	gotStr := ""
-	if gotVal != nil {
-		gotStr = gotVal.String()
+	if gotTv.Value != nil {
+		gotStr = gotTv.Value.String()
 	}
 	if gotStr != valStr {
 		t.Errorf("Eval(%q) got value %s, want %s", str, gotStr, valStr)
@@ -122,7 +122,7 @@ func f(a int, s string) float64 {
 	funcScope := fileScope.Child(0)
 
 	var tests = []string{
-		`true => true, untyped boolean`,
+		`true => true, untyped bool`,
 		`fmt.Println => , func(a ...interface{}) (n int, err error)`,
 		`c => 3, untyped float`,
 		`T => , p.T`,
@@ -132,7 +132,7 @@ func f(a int, s string) float64 {
 		`x => , int`,
 		`d/c => 1, int`,
 		`c/2 => 3/2, untyped float`,
-		`m.Pi < m.E => false, untyped boolean`,
+		`m.Pi < m.E => false, untyped bool`,
 	}
 	for _, test := range tests {
 		str, typ := split(test, ", ")

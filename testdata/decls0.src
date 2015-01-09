@@ -155,18 +155,14 @@ type (
 	I8 /* ERROR "illegal cycle" */ interface {
 		I8
 	}
-	// Use I09 (rather than I9) because it appears lexically before
-	// I10 so that we get the illegal cycle here rather then in the
-	// declaration of I10. If the implementation sorts by position
-	// rather than name, the error message will still be here.
-	I09 /* ERROR "illegal cycle" */ interface {
+	I9 interface {
 		I10
 	}
 	I10 interface {
 		I11
 	}
-	I11 interface {
-		I09
+	I11 /* ERROR "illegal cycle" */ interface {
+		I9
 	}
 
 	C1 chan int
@@ -194,10 +190,11 @@ func (S0) m2(x *S0 /* ERROR "field or method" */ .m2) {}
 func (S0) m3() (x S0 /* ERROR "field or method" */ .m3) { return }
 func (S0) m4() (x *S0 /* ERROR "field or method" */ .m4) { return }
 
-// interfaces may have at most one blank method
+// interfaces may not have any blank methods
 type BlankI interface {
-	_()
-	_ /* ERROR redeclared */ ()
+	_ /* ERROR "invalid method name" */ ()
+	_ /* ERROR "invalid method name" */ (float32) int
+	m()
 }
 
 // non-interface types may have multiple blank methods
@@ -207,20 +204,3 @@ func (BlankT) _() {}
 func (BlankT) _(int) {}
 func (BlankT) _() int { return 0 }
 func (BlankT) _(int) int { return 0}
-
-// no type can ever satisfy an interface with a _ method
-func _() {
-	var i BlankI
-	var x BlankT
-	i = x /* ERROR "cannot assign" */
-	_ = i
-}
-
-// assignability of interfaces with blank methods
-func _() {
-	var x1, x1b interface { _() }
-	var x2 interface { _() }
-	x1 = x2
-	_ = x1
-	x1 = x1b
-}

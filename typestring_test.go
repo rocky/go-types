@@ -10,7 +10,7 @@ import (
 	"go/token"
 	"testing"
 
-	_ "github.com/rocky/go-gcimporter"
+	_ "golang.org/x/tools/go/gcimporter"
 	. "github.com/rocky/go-types"
 )
 
