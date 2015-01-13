@@ -10,7 +10,7 @@ import (
 	"go/ast"
 	"go/token"
 
-	"golang.org/x/tools/astutil"
+	"github.com/rocky/go-astutil"
 	"github.com/rocky/go-exact"
 )
 
